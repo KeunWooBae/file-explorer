@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 
@@ -8,6 +9,7 @@ const assets = new Map([
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/theme.js', ['theme.js', 'text/javascript; charset=utf-8']],
 ]);
+for (const [file,type] of [['multi-terminal.js','text/javascript'],['ssh-workspace.js','text/javascript'],['ssh-workspace.css','text/css'],['node_modules/@xterm/xterm/lib/xterm.js','text/javascript'],['node_modules/@xterm/xterm/css/xterm.css','text/css'],['node_modules/@xterm/addon-fit/lib/addon-fit.js','text/javascript']]) assets.set('/'+file,[file,type+'; charset=utf-8']);
 const port = Number(process.env.PORT ?? 4173);
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error('PORT must be an integer between 1 and 65535.');
@@ -36,7 +38,8 @@ const server = http.createServer(async (request, response) => {
     return;
   }
   try {
-    const body = await readFile(new URL(asset[0], import.meta.url));
+    let body = await readFile(new URL(asset[0], import.meta.url));
+    if(asset[0]==='index.html')body=Buffer.from(body.toString('utf8').replaceAll('__PANE_STYLE_NONCE__',randomBytes(24).toString('base64')));
     response.writeHead(200, { 'Content-Type': asset[1], 'Content-Length': body.length });
     response.end(request.method === 'HEAD' ? undefined : body);
   } catch (error) {

@@ -265,4 +265,4 @@ function createTransferService(options = {}) {
   };
 }
 
-module.exports = { createTransferService, validateTransfer, mutationPath, nativeMove, transferError, copyFileRecord };
+module.exports = { createTransferService, validateTransfer, mutationPath, nativeMove, transferError, copyFileRecord, noLinkAncestors };

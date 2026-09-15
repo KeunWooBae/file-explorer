@@ -1,8 +1,8 @@
 {
   "name": "pane-prototype",
-  "version": "0.4.0",
+  "version": "0.6.1",
   "private": true,
-  "description": "A cleaner multi-pane file manager interface prototype.",
+  "description": "Windows multi-pane file explorer",
   "type": "module",
   "main": "desktop/main.cjs",
   "devDependencies": {
@@ -11,8 +11,8 @@
   },
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check app.js && node --check theme.js && node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/filesystem.cjs && node --check desktop/session-store.cjs && node --check desktop/preferences-store.cjs && node --check desktop/file-operations.cjs && node --check desktop/explorer-actions.cjs",
-    "test": "node --test desktop/native-files.test.cjs desktop/preferences-store.test.cjs desktop/file-operations.test.cjs desktop/explorer-actions.test.cjs",
+    "check": "node --check app.js && node --check theme.js && node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/filesystem.cjs && node --check desktop/session-store.cjs && node --check desktop/preferences-store.cjs && node --check desktop/file-operations.cjs && node --check desktop/explorer-actions.cjs && node --check server.mjs && node --check ssh-workspace.js && node --check desktop/ssh-auth.cjs && node --check desktop/sftp-service.cjs && node --check multi-terminal.js && node --check desktop/ssh-connections.cjs && node --check desktop/ssh-profiles.cjs && node --check desktop/ssh-directory.cjs",
+    "test": "node --test desktop/native-files.test.cjs desktop/preferences-store.test.cjs desktop/file-operations.test.cjs desktop/explorer-actions.test.cjs desktop/ssh-auth.test.cjs desktop/sftp-service.test.cjs desktop/ssh-workspace.test.cjs",
     "desktop": "electron .",
     "build:portable": "node desktop/create-icon.cjs && electron-builder --win portable --x64"
   },
@@ -27,15 +27,14 @@
       "styles.css",
       "app.js",
       "theme.js",
-      "desktop/main.cjs",
-      "desktop/preload.cjs",
-      "desktop/filesystem.cjs",
-      "desktop/session-store.cjs",
-      "desktop/preferences-store.cjs",
-      "desktop/file-operations.cjs",
-      "desktop/explorer-actions.cjs",
+      "desktop/*.cjs",
+      "!desktop/*.test.cjs",
+      "!desktop/verify-*.cjs",
       "desktop/pane.ico",
-      "package.json"
+      "package.json",
+      "ssh-workspace.js",
+      "ssh-workspace.css",
+      "multi-terminal.js"
     ],
     "asar": true,
     "win": {
@@ -52,6 +51,12 @@
     "portable": {
       "artifactName": "pane-${version}-portable-${arch}.${ext}",
       "requestExecutionLevel": "user"
-    }
+    },
+    "npmRebuild": false
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "ssh2": "1.17.0"
   }
 }

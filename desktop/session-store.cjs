@@ -43,7 +43,11 @@ function createSessionStore(directory) {
     load() {
       try {
         if (fs.statSync(filename).size > MAX_SESSION_BYTES) throw invalidSession();
-        return { session: validateSession(JSON.parse(fs.readFileSync(filename, 'utf8'))) };
+        const saved=JSON.parse(fs.readFileSync(filename,'utf8'));
+        if(saved.version===2 && saved.workspaces?.design && saved.workspaces?.documents){
+          return {session:validateSession({...saved,version:1,workspaceId:['design','documents'].includes(saved.workspaceId)?saved.workspaceId:'design'})};
+        }
+        return { session: validateSession(saved) };
       } catch (error) {
         if (error.code === 'ENOENT') return { session: null };
         return { session: null, sessionWarning: '이전 작업 공간 설정을 읽을 수 없어 기본 폴더를 표시합니다. 새 경로를 선택하면 설정을 다시 저장합니다.' };

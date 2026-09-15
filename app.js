@@ -1,3 +1,4 @@
+import { initSshWorkspace } from './ssh-workspace.js';
 const $ = (selector, scope = document) => scope.querySelector(selector);
 const $$ = (selector, scope = document) => [...scope.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1223,6 +1224,7 @@ $('#help-button').addEventListener('click',() => {
   $('#info-dialog').showModal();
 });
 document.addEventListener('keydown',(event) => {
+  if (document.querySelector('.ssh-workspace:not([hidden]), .multi-workspace:not([hidden])')) return;
   if ($('dialog[open]') || !ready) return;
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key==='k') {event.preventDefault();closeAddressMenu();$('#global-search').focus();$('#global-search').select();return;}
@@ -1272,3 +1274,5 @@ window.addEventListener('focus',() => {
 });
 renderSidebar();
 bootstrap();
+
+initSshWorkspace(() => activePane()?.path || favorites[0]?.path);
