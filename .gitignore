@@ -1,0 +1,37 @@
+# Dependencies, packaged applications, and local caches
+node_modules/
+/dist-portable/
+/dist/
+/.cache/
+*.exe
+*.asar
+*.log
+*.dmp
+
+# Portable and development profiles (paths, preferences, SSH host trust)
+.pane-dev-data/
+pane-data/
+
+# Keep reproducible checks; ignore screenshots, fixtures and one-off helpers
+/.checks/*
+!/.checks/verify-browser-files.cjs
+!/.checks/verify-explorer.cjs
+!/.checks/verify-real-files.cjs
+!/.checks/verify-workflows.cjs
+!/.checks/verify-enhanced-ui.cjs
+!/.checks/verify-native-enhancements.cjs
+
+# Local credentials and machine settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa
+id_ed25519
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
+coverage/
