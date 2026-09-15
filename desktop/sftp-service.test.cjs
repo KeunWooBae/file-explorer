@@ -5,7 +5,7 @@ test('real loopback SSH/SFTP verifies host keys and transfers both ways without 
   const remote=path.join(root,'remote'),local=path.join(root,'local');await fs.mkdir(remote);await fs.mkdir(local);await fs.mkdir(path.join(remote,'nested'));await fs.writeFile(path.join(remote,'nested/한글.txt'),'remote bytes');await fs.writeFile(path.join(local,'upload.txt'),'local bytes');
   const hostKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs1',format:'pem'});
   const clients=new Set();let received='',windowSize;const outputs=[];
-  const userKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs1',format:'pem'});const parsedUserKey=utils.parseKey(userKey);const keyFile=path.join(root,'identity');await fs.writeFile(keyFile,userKey);
+  const userKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs1',format:'pem'});const parsedUserKey=utils.parseKey(userKey);await fs.mkdir(path.join(root,'.ssh'));const keyFile=path.join(root,'.ssh','id_rsa');await fs.writeFile(keyFile,userKey);
   const configPath=path.join(root,'config');await fs.writeFile(configPath,'Host *\n  IdentityFile "'+keyFile.replaceAll('\\','/')+'"\n  IdentitiesOnly yes\n  User test\n');
   const server=new Server({hostKeys:[hostKey]},client=>{
     clients.add(client);client.on('close',()=>clients.delete(client));client.on('error',()=>{});
@@ -30,20 +30,33 @@ test('real loopback SSH/SFTP verifies host keys and transfers both ways without 
     })));
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  const input={host:'127.0.0.1',port:server.address().port,username:'test',password:'fixture-password'};
-  let prompts=0;const service=createSftpService({directory:root,authOptions:{home:root,configPath},onTerminal:value=>{if(value.data){outputs.push(Buffer.from(value.data,'base64').toString());service.acknowledgeTerminal({id:value.id,bytes:value.bytes});}},confirmHost:async()=>{prompts++;return true;}});
+  const input={host:'127.0.0.1',port:server.address().port,username:'test',authMode:'password',password:'fixture-password'};
+  let registry;let prompts=0;const service=createSftpService({directory:root,authOptions:{home:root,configPath},onTerminal:value=>{if(value.data){outputs.push(Buffer.from(value.data,'base64').toString());service.acknowledgeTerminal({id:value.id,bytes:value.bytes});}},confirmHost:async()=>{prompts++;return true;}});
   try{
     const connection=await service.connect(input);assert.equal(connection.path,'/');assert.equal(prompts,1);
     assert.equal((await service.list('/')).entries[0].name,'nested');
     const downloaded=await service.transfer({direction:'download',sources:['/nested'],destination:local});assert.equal(downloaded.failed.length,0,JSON.stringify(downloaded));assert.equal(await fs.readFile(path.join(local,'nested/한글.txt'),'utf8'),'remote bytes');
     const uploaded=await service.transfer({direction:'upload',sources:[path.join(local,'upload.txt')],destination:'/'});assert.equal(uploaded.failed.length,0,JSON.stringify(uploaded));assert.equal(await fs.readFile(path.join(remote,'upload.txt'),'utf8'),'local bytes');
     await fs.writeFile(path.join(local,'upload.txt'),'replacement');const conflict=await service.transfer({direction:'upload',sources:[path.join(local,'upload.txt')],destination:'/'});assert.equal(conflict.failed.length,1);assert.equal(await fs.readFile(path.join(remote,'upload.txt'),'utf8'),'local bytes');
-    await service.disconnect();await service.connect({...input,password:undefined,authMode:'auto'});assert.equal(prompts,1);
+    await service.disconnect();await service.connect({...input,password:undefined,authMode:'default-key'});assert.equal(prompts,1);
     await service.openTerminal({cols:100,rows:30});await service.writeTerminal('echo hello\r');
     for(let i=0;i<100&&(!received.includes('echo hello')||!outputs.join('').includes('echo hello')||!windowSize);i++)await new Promise(r=>setTimeout(r,20));
     assert.match(received,/echo hello/);assert.match(outputs.join(''),/fixture shell ready/);assert.match(outputs.join(''),/echo hello/);assert.equal(windowSize.cols,100);assert.equal(windowSize.rows,30);
     assert.throws(()=>service.writeTerminal('x'.repeat(70000)),/너무 큽니다/);
     await service.disconnect();
+    const {createSshConnections}=require('./ssh-connections.cjs');const multiOutput=new Map();
+    registry=createSshConnections({directory:path.join(root,'multi'),confirmHost:async()=>true,emit:(type,value)=>{if(type==='output'&&value.data){multiOutput.set(value.connectionId,(multiOutput.get(value.connectionId)||'')+Buffer.from(value.data,'base64').toString());registry.ack(value.connectionId,value);}}});
+    const saved=await registry.profiles.save({host:input.host,port:input.port,username:'test',authMode:'password'});
+    const a=await registry.openSaved({profileId:saved[0].id,password:'fixture-password'}),b=await registry.openSaved({profileId:saved[0].id,password:'fixture-password'});
+    await registry.open(a.connectionId,{cols:80,rows:24});await registry.open(b.connectionId,{cols:80,rows:24});
+    await registry.broadcast({ids:[a.connectionId,b.connectionId],data:'both-hosts\r'});
+    for(let i=0;i<100&&(!multiOutput.get(a.connectionId)?.includes('both-hosts')||!multiOutput.get(b.connectionId)?.includes('both-hosts'));i++)await new Promise(r=>setTimeout(r,20));
+    assert.match(multiOutput.get(a.connectionId),/both-hosts/);assert.match(multiOutput.get(b.connectionId),/both-hosts/);
+    await registry.broadcast({ids:[a.connectionId],data:'only-selected\r'});
+    for(let i=0;i<100&&!multiOutput.get(a.connectionId)?.includes('only-selected');i++)await new Promise(r=>setTimeout(r,20));
+    assert.match(multiOutput.get(a.connectionId),/only-selected/);assert(!multiOutput.get(b.connectionId).includes('only-selected'));
+    await fs.mkdir(path.join(remote,'one'));await fs.mkdir(path.join(remote,'two'));
+    const sent=await registry.upload({sources:[path.join(local,'upload.txt')],targets:[{id:a.connectionId,destination:'/one'},{id:b.connectionId,destination:'/two'}]});assert(sent.every(item=>item.ok&&item.result.failed.length===0),JSON.stringify(sent));assert.equal(await fs.readFile(path.join(remote,'one/upload.txt'),'utf8'),'replacement');assert.equal(await fs.readFile(path.join(remote,'two/upload.txt'),'utf8'),'replacement');await registry.disconnectAll();registry=null;
     const known=JSON.parse(await fs.readFile(path.join(root,'ssh-known-hosts.json'),'utf8'));known[`127.0.0.1:${input.port}`]='SHA256:wrong';await fs.writeFile(path.join(root,'ssh-known-hosts.json'),JSON.stringify(known));await assert.rejects(service.connect(input),/서버 키/);
-  }finally{await service.disconnect();for(const client of clients)client.end();await new Promise(resolve=>server.close(resolve));}
+  }finally{await registry?.disconnectAll();await service.disconnect();for(const client of clients)client.end();await new Promise(resolve=>server.close(resolve));}
 });

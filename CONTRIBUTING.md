@@ -16,3 +16,7 @@ npm run desktop
 - Windows CI는 문법·백엔드 테스트를 수행합니다. GUI·포터블 동작은 별도로 검증합니다.
 - UI 검사는 개발 서버 실행 후 `node .checks/verify-ssh-workspace.cjs`를 사용합니다. Playwright와 Edge가 필요하며 설치된 Playwright가 있는 node_modules 경로를 첫 인수로 지정할 수도 있습니다.
 - 실행 파일, 캐시, 테스트 산출물, 사용자 설정, 개인키는 Git에서 제외합니다. 실제 계정 정보를 테스트에 넣지 않습니다.
+
+## 버전 관리
+
+작은 기능 추가·수정은 0.6.0 → 0.6.1처럼 패치 버전으로 증가시킵니다. minor 버전 증가는 별도로 결정합니다. 현재 작업 버전은 0.6.1입니다. 새 다중 터미널 UI 검사는 `node .checks/verify-multi-terminal.cjs <Playwright가 설치된 node_modules 경로>`로 실행합니다.

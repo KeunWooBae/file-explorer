@@ -1224,7 +1224,7 @@ $('#help-button').addEventListener('click',() => {
   $('#info-dialog').showModal();
 });
 document.addEventListener('keydown',(event) => {
-  if (document.querySelector('.ssh-workspace:not([hidden])')) return;
+  if (document.querySelector('.ssh-workspace:not([hidden]), .multi-workspace:not([hidden])')) return;
   if ($('dialog[open]') || !ready) return;
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key==='k') {event.preventDefault();closeAddressMenu();$('#global-search').focus();$('#global-search').select();return;}

@@ -35,26 +35,23 @@ async function resolveAuth(input, { home = os.homedir(), configPath } = {}) {
   const expand = filename => filename.replace(/^~(?=[/\\]|$)/, home).replace(/%d/g, home).replace(/%h/g, host).replace(/%r/g, username).replace(/%p/g, String(port));
   const attempts = [{ type: 'none', username }];
   const diagnostics = [];
-  const mode = input.authMode || (input.password ? 'password' : 'auto');
-  if (!['auto', 'key', 'password'].includes(mode)) throw new Error('인증 방식을 확인하세요.');
-  if (mode !== 'password') {
-    const agent = first('identityagent');
-    if (mode === 'auto' && first('identitiesonly') !== 'yes' && agent !== 'none') attempts.push({ type: 'agent', username, agent: agent && agent !== 'SSH_AUTH_SOCK' ? expand(agent) : process.env.SSH_AUTH_SOCK || (process.platform === 'win32' ? '\\\\.\\pipe\\openssh-ssh-agent' : '') });
-    const keys = input.privateKeyPath ? [input.privateKeyPath] : config.identityfile || [path.join(home, '.ssh/id_ed25519'), path.join(home, '.ssh/id_rsa'), path.join(home, '.ssh/id_ecdsa')];
-    if (mode === 'key' && !input.privateKeyPath) throw new Error('개인키 파일을 선택하세요.');
-    for (const filename of [...new Set(keys)].slice(0, 30)) {
-      if (filename === 'none') continue;
-      try {
-        const full = expand(filename);
-        if ((await fs.stat(full)).size > 1024 * 1024) throw new Error('개인키 파일이 너무 큽니다.');
-        const key = utils.parseKey(await fs.readFile(full), input.passphrase || undefined);
-        if (key instanceof Error) { diagnostics.push('잠긴 키 또는 지원하지 않는 키 형식'); if (mode === 'key') throw new Error('개인키를 열 수 없습니다. 키 암호와 OpenSSH 형식을 확인하세요.'); continue; }
-        attempts.push({ type: 'publickey', username, key });
-      } catch (error) { if (mode === 'key' || input.privateKeyPath) throw error; if (error.code !== 'ENOENT') diagnostics.push('키 파일 접근 실패'); }
+  const mode = input.authMode || 'default-key';
+  if (!['default-key', 'password'].includes(mode)) throw new Error('인증 방식은 비밀번호 또는 개인키 자동 식별만 사용할 수 있습니다.');
+  if (mode === 'default-key') {
+    const folder=path.join(home,'.ssh');
+    const preferred=['id_ed25519','id_rsa','id_ecdsa'];
+    let names=[];try{names=(await fs.readdir(folder,{withFileTypes:true})).filter(entry=>entry.isFile()&&!/\.pub$|^(config|known_hosts.*|authorized_keys.*)$/i.test(entry.name)).map(entry=>entry.name);}catch(e){if(e.code!=='ENOENT')throw e;}
+    names.sort((a,b)=>{const rank=n=>preferred.includes(n)?preferred.indexOf(n):99;return rank(a)-rank(b)||a.localeCompare(b);});
+    for(const name of names.slice(0,30)){
+      try{const full=path.join(folder,name);if((await fs.stat(full)).size>1024*1024)continue;const key=utils.parseKey(await fs.readFile(full),input.passphrase||undefined);if(key instanceof Error){diagnostics.push('잠긴 키 또는 지원하지 않는 파일');continue;}attempts.push({type:'publickey',username,key});}
+      catch(e){diagnostics.push('개인키 접근 실패');}
     }
+    if(attempts.length===1)throw new Error('기본 .ssh 폴더에서 사용할 개인키를 찾지 못했습니다. 암호화된 키라면 키 암호를 입력하세요.');
+  } else {
+    if(typeof input.password!=='string'||!input.password)throw new Error('비밀번호를 입력하세요.');
+    attempts.push({type:'password',username,password:input.password});
   }
-  if (input.password) attempts.push({ type: 'password', username, password: input.password });
-  return { host, port, username, attempts: attempts.filter(item => item.type !== 'agent' || item.agent), diagnostics, hostAlias: first('hostkeyalias'), knownHosts: config.userknownhostsfile ? config.userknownhostsfile.flatMap(value => (value.match(/"[^"]+"|\S+/g)||[]).map(file=>expand(file.replace(/^"|"$/g,'')))).filter(file=>file!=='none') : [path.join(home, '.ssh/known_hosts'), path.join(home, '.ssh/known_hosts2')] };
+  return { host, port, username, attempts, diagnostics, hostAlias: first('hostkeyalias'), knownHosts: config.userknownhostsfile ? config.userknownhostsfile.flatMap(value => (value.match(/"[^"]+"|\S+/g)||[]).map(file=>expand(file.replace(/^"|"$/g,'')))).filter(file=>file!=='none') : [path.join(home, '.ssh/known_hosts'), path.join(home, '.ssh/known_hosts2')] };
 }
 function matchesHost(pattern, host) {
   if (pattern.startsWith('|1|')) {

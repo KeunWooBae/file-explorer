@@ -35,3 +35,4 @@ Desktop.ini
 coverage/
 !/.checks/verify-ssh-workspace.cjs
 !/.checks/verify-native-ssh.cjs
+!/.checks/verify-multi-terminal.cjs

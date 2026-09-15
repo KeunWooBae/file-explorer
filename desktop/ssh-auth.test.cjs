@@ -1,6 +1,6 @@
 const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs/promises');const path=require('node:path');const {generateKeyPairSync,createHmac}=require('node:crypto');const {resolveAuth,checkKnownHosts}=require('./ssh-auth.cjs');
-test('OpenSSH alias selects deployed IdentityFile and user without a password',async()=>{
- const root=await fs.mkdtemp(path.join(__dirname,'../.checks/auth-'));const keyPath=path.join(root,'custom-key');await fs.writeFile(keyPath,generateKeyPairSync('ed25519').privateKey.export({type:'pkcs8',format:'pem'}));
+test('OpenSSH alias uses private keys in default .ssh folder without password or agent',async()=>{
+ const root=await fs.mkdtemp(path.join(__dirname,'../.checks/auth-'));await fs.mkdir(path.join(root,'.ssh'));const keyPath=path.join(root,'.ssh','custom-key');await fs.writeFile(keyPath,generateKeyPairSync('ed25519').privateKey.export({type:'pkcs8',format:'pem'}));
  // ssh2 accepts native OpenSSH/RSA encodings; use an RSA fixture for interoperability.
  await fs.writeFile(keyPath,generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs1',format:'pem'}));
  const configPath=path.join(root,'config');await fs.writeFile(configPath,`Host deployed\n HostName 127.0.0.1\n User fixture-user\n Port 2202\n IdentityFile "${keyPath.replaceAll('\\','/')}"\n IdentitiesOnly yes\n`);
