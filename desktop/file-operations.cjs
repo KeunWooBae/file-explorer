@@ -17,6 +17,7 @@ const messages = {
   ROOT_NOT_SUPPORTED: '드라이브 또는 공유 폴더 전체는 이동할 수 없습니다. 내부 항목을 선택해 주세요.',
   UNSUPPORTED_TYPE: '일반 파일과 폴더만 복사·이동할 수 있습니다.',
   SOURCE_CHANGED: '작업 중 원본이 변경되었습니다. 원본을 확인한 뒤 다시 시도해 주세요.',
+  CANCELLED: '작업을 취소했습니다. 이미 완료한 항목은 작업 결과에서 확인하세요.',
   ENOENT: '원본 또는 대상 폴더를 찾을 수 없습니다.',
   ENOTDIR: '대상은 폴더여야 합니다.',
   EACCES: '파일 또는 폴더에 접근할 권한이 없습니다.',
@@ -161,7 +162,7 @@ async function cleanupCreated(created, stage) {
   return clean;
 }
 
-async function stagedCopy(records, source, destination, target, move, copy) {
+async function stagedCopy(records, source, destination, target, move, copy, checkpoint = async () => {}) {
   const stage = path.win32.join(destination, `.pane-copy-${randomUUID()}`);
   const payload = path.win32.join(stage, 'content');
   const created = [];
@@ -170,12 +171,18 @@ async function stagedCopy(records, source, destination, target, move, copy) {
   let published = false;
   try {
     for (const record of records) {
+      await checkpoint(record);
       await noLinkAncestors(destination);
       const targetPath = path.win32.join(payload, path.win32.relative(source, record.path));
       if (record.stat.isDirectory()) {
         await fs.mkdir(targetPath);
         created.push({ path: targetPath, stat: await fs.lstat(targetPath) });
       } else await copy(record, targetPath, created);
+    }
+    await checkpoint();
+    // Children must be complete before restoring directory timestamps.
+    for (const record of [...records].reverse()) {
+      if (record.stat.isDirectory()) await fs.utimes(path.win32.join(payload, path.win32.relative(source, record.path)), record.stat.atime, record.stat.mtime);
     }
     const after = await inspectTree(source);
     const afterByPath = new Map(after.map(item => [key(item.path), item]));
@@ -195,6 +202,7 @@ async function stagedCopy(records, source, destination, target, move, copy) {
 function createTransferService(options = {}) {
   const move = options.nativeMove || nativeMove;
   const copy = options.copyFile || copyFileRecord;
+  const checkpoint = options.checkpoint || (async () => {});
   let active;
   async function run(input) {
     const request = validateTransfer(input);
@@ -209,6 +217,7 @@ function createTransferService(options = {}) {
       let crossVolumeStarted = false;
       let moveStarted = false;
       try {
+        await checkpoint();
         if (key(source) === key(path.win32.parse(source).root)) throw failure('ROOT_NOT_SUPPORTED');
         await noLinkAncestors(source);
         await noLinkAncestors(destination);
@@ -219,7 +228,7 @@ function createTransferService(options = {}) {
         if (records[0].stat.isDirectory() && within(canonicalDestination, canonicalSource)) throw failure('DESCENDANT_TARGET');
         if (await exists(target)) throw failure('EEXIST');
         if (request.operation === 'copy') {
-          await stagedCopy(records, source, destination, target, move, copy);
+          await stagedCopy(records, source, destination, target, move, copy, checkpoint);
         } else {
           moveStarted = true;
           const directory = records[0].stat.isDirectory();
@@ -249,6 +258,7 @@ function createTransferService(options = {}) {
         }
         const detail = { source, ...transferError(error) };
         (['EEXIST', 'SAME_LOCATION', 'DESCENDANT_TARGET', 'LINK_NOT_SUPPORTED', 'ROOT_NOT_SUPPORTED'].includes(detail.code) ? result.skipped : result.failed).push(detail);
+        if (detail.code === 'CANCELLED') break;
       }
     }
     return result;
@@ -265,4 +275,4 @@ function createTransferService(options = {}) {
   };
 }
 
-module.exports = { createTransferService, validateTransfer, mutationPath, nativeMove, transferError, copyFileRecord };
+module.exports = { createTransferService, validateTransfer, mutationPath, nativeMove, transferError, copyFileRecord, inspectTree, noLinkAncestors, sameFile, sameIdentity };
