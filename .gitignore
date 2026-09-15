@@ -18,8 +18,6 @@ pane-data/
 !/.checks/verify-explorer.cjs
 !/.checks/verify-real-files.cjs
 !/.checks/verify-workflows.cjs
-!/.checks/verify-enhanced-ui.cjs
-!/.checks/verify-native-enhancements.cjs
 
 # Local credentials and machine settings
 .env
@@ -35,3 +33,5 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 coverage/
+!/.checks/verify-ssh-workspace.cjs
+!/.checks/verify-native-ssh.cjs

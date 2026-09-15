@@ -1,4 +1,4 @@
-import { installFeatures } from './explorer-features.js';
+import { initSshWorkspace } from './ssh-workspace.js';
 const $ = (selector, scope = document) => scope.querySelector(selector);
 const $$ = (selector, scope = document) => [...scope.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -108,7 +108,6 @@ let internalDrag = null;
 let dropTarget = null;
 let nativeDragOut = false;
 let toastTimer;
-let features;
 const workspace = () => workspaces[workspaceId];
 const activePane = () => workspace()?.panes[workspace().active];
 const allPanes = () => Object.values(workspaces).flatMap((item) => item.panes);
@@ -123,7 +122,7 @@ const panelElement = (pane) => document.getElementById(`panel-${pane.id}`);
 const addressElement = (pane) => $('.path-input',panelElement(pane));
 
 function makePane(workspaceKey,index,saved) {
-  return {id:`${workspaceKey}-${index}`,workspaceId:workspaceKey,index,path:saved.path,name:saved.path,parent:null,breadcrumbs:[],entries:[],history:[],selected:new Set(),selectionAnchor:null,sort:saved.sort,direction:saved.direction,loaded:false,loading:false,error:null,requestToken:0,pendingPath:null,draft:saved.path,draftVersion:0,dirty:false,addressOptions:[],tabs:saved.tabs || [saved.path],activeTab:saved.activeTab || 0};
+  return {id:`${workspaceKey}-${index}`,workspaceId:workspaceKey,index,path:saved.path,name:saved.path,parent:null,breadcrumbs:[],entries:[],history:[],selected:new Set(),selectionAnchor:null,sort:saved.sort,direction:saved.direction,loaded:false,loading:false,error:null,requestToken:0,pendingPath:null,draft:saved.path,draftVersion:0,dirty:false,addressOptions:[]};
 }
 function defaultSession() {
   const fallback = favorites.find((item) => item.id === 'home')?.path || drives[0]?.path || favorites[0]?.path || '';
@@ -132,13 +131,13 @@ function defaultSession() {
   return {version:1,workspaceId:'design',workspaces:{design:{layout:4,active:0,panes:panes(['home','downloads','documents','pictures'])},documents:{layout:2,active:0,panes:panes(['documents','downloads','home','pictures'])}}};
 }
 function isSessionValid(session) {
-  return [1,2].includes(session?.version) && Object.hasOwn(session.workspaces || {},session.workspaceId) && Object.keys(session.workspaces).every((id) => {
+  return session?.version === 1 && Object.hasOwn(workspaceDefinitions,session.workspaceId) && Object.keys(workspaceDefinitions).every((id) => {
     const saved = session.workspaces?.[id];
     return saved && [1,2,4].includes(saved.layout) && Number.isInteger(saved.active) && saved.active >= 0 && saved.active < 4 && Array.isArray(saved.panes) && saved.panes.length === 4 && saved.panes.every((pane) => typeof pane.path === 'string' && pane.path.length > 0 && ['name','modified','size'].includes(pane.sort) && [1,-1].includes(pane.direction));
   });
 }
 function sessionSnapshot() {
-  return {version:2,workspaceId,workspaces:Object.fromEntries(Object.entries(workspaces).map(([id,item]) => [id,{name:item.name,layout:item.layout,active:item.active,panes:item.panes.map((pane) => ({path:pane.path,sort:pane.sort,direction:pane.direction,tabs:pane.tabs,activeTab:pane.activeTab}))}]))};
+  return {version:1,workspaceId,workspaces:Object.fromEntries(Object.entries(workspaces).map(([id,item]) => [id,{layout:item.layout,active:item.active,panes:item.panes.map((pane) => ({path:pane.path,sort:pane.sort,direction:pane.direction}))}]))};
 }
 function renderStorageMessage() {
   const message = [startupWarning,saveError,preferenceError].filter(Boolean).join(' ');
@@ -278,7 +277,6 @@ function copySelection(operation) {
   if (!files.length || transferPending || pane.loading || pane.error || typeof bridge.transfer !== 'function') return;
   clipboard = {operation,sources:files.map((file) => file.path)};
   clipboardRevision++;
-  features?.writeClipboard(clipboard);
   updateSelection();
   showToast(`${files.length}개 항목 ${operation==='move'?'이동':'복사'} 준비. 대상 창에서 붙여넣으세요.`);
 }
@@ -362,7 +360,7 @@ async function performTransfer(sources,destination,operation,fromClipboard = fal
   if (!sources.length || !destination || transferPending || typeof bridge.transfer !== 'function') return;
   const revision = clipboardRevision;
   await runMutation(`${sources.length}개 항목 ${operation==='move'?'이동':'복사'} 중…`,operation,destination,async () => {
-    const response = await bridge.transfer({sources:[...sources],destination,operation,conflict:features?.conflict() || 'skip'});
+    const response = await bridge.transfer({sources:[...sources],destination,operation});
     if (!response?.ok) throw new Error(response?.error?.message || '파일 작업을 완료하지 못했어요.');
     const result = response.value;
     showTransferResult(result);
@@ -371,15 +369,13 @@ async function performTransfer(sources,destination,operation,fromClipboard = fal
       clipboard.sources = clipboard.sources.filter((source) => !completed.has(pathKey(source)));
       if (!clipboard.sources.length) clipboard = null;
       clipboardRevision++;
-      features?.writeClipboard(clipboard,sources);
     }
     if (operation==='move') result.completed.forEach((item) => remapReferences(item.source,item.destination));
     const affectedPath = (path) => samePath(path,destination) || sources.some((source) => samePath(path,parentPath(source)) || (operation==='move' && pathWithin(path,source)));
     await refreshAffected(affectedPath,operation==='move'?result.completed:[]);
   });
 }
-async function pasteSelection() {
-  await features?.readClipboard();
+function pasteSelection() {
   const pane = activePane();
   if (clipboard && pane?.loaded && !pane.loading && !pane.error) performTransfer(clipboard.sources,pane.path,clipboard.operation,true);
 }
@@ -578,9 +574,7 @@ function showDropFeedback(target,event) {
 }
 function sortedFiles(pane) {
   const query = $('#global-search').value.trim().toLocaleLowerCase('ko');
-  const cacheKey = `${query}|${pane.sort}|${pane.direction}`;
-  if (pane.sortedCache?.entries === pane.entries && pane.sortedCache.key === cacheKey) return pane.sortedCache.rows;
-  const rows = pane.entries.filter((file) => file.name.toLocaleLowerCase('ko').includes(query)).sort((a,b) => {
+  return pane.entries.filter((file) => file.name.toLocaleLowerCase('ko').includes(query)).sort((a,b) => {
     if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
     let compared;
     if (pane.sort === 'size') compared = (a.size ?? -1) - (b.size ?? -1);
@@ -588,11 +582,9 @@ function sortedFiles(pane) {
     else compared = a.name.localeCompare(b.name,'ko',{numeric:true,sensitivity:'base'});
     return (compared || a.name.localeCompare(b.name,'ko',{numeric:true})) * pane.direction;
   });
-  pane.sortedCache = {entries:pane.entries,key:cacheKey,rows};
-  return rows;
 }
 function renderSidebar() {
-  $('#workspaces').innerHTML = Object.entries(workspaceDefinitions).map(([id,item]) => `<button class="sidebar-button ${id===workspaceId?'selected':''}" data-workspace="${id}" aria-current="${id===workspaceId?'page':'false'}" title="${escapeHtml(item.name)}" ${ready?'':'disabled'}>${icon(item.icon)}<span>${escapeHtml(item.name)}</span>${id===workspaceId?'<i class="workspace-dot" aria-hidden="true"></i>':''}</button>`).join('');
+  $('#workspaces').innerHTML = Object.entries(workspaceDefinitions).map(([id,item]) => `<button class="sidebar-button ${id===workspaceId?'selected':''}" data-workspace="${id}" aria-current="${id===workspaceId?'page':'false'}" title="${item.name}" ${ready?'':'disabled'}>${icon(item.icon)}<span>${item.name}</span>${id===workspaceId?'<i class="workspace-dot" aria-hidden="true"></i>':''}</button>`).join('');
   $('#favorites').innerHTML = favorites.map((item,index) => `<button class="sidebar-button" data-favorite="${index}" title="${escapeHtml(item.path)}" aria-label="${escapeHtml(item.label)}">${icon(Object.hasOwn({downloads:'download',pictures:'image'},item.icon)?{downloads:'download',pictures:'image'}[item.icon]:item.icon)}<span>${escapeHtml(item.label)}</span></button>`).join('') + userFavorites.map((item,index) => `<div class="favorite-row"><button class="sidebar-button" data-custom-favorite="${index}" title="${escapeHtml(item.path)}" aria-label="${escapeHtml(item.label)} 즐겨찾기 열기">${icon('star')}<span>${escapeHtml(item.label)}</span></button><button type="button" class="icon-button favorite-remove" data-remove-favorite="${index}" aria-label="${escapeHtml(item.label)} 즐겨찾기 제거" title="즐겨찾기 제거">${icon('close')}</button></div>`).join('');
   $('#drives').innerHTML = drives.map((item,index) => `<button class="sidebar-button drive-button" data-drive="${index}" title="${escapeHtml(item.path)}" aria-label="${escapeHtml(item.label)}">${icon('drive')}<span class="drive-copy"><span>${escapeHtml(item.label)}</span><small>${escapeHtml(item.path)}</small></span></button>`).join('');
 }
@@ -630,32 +622,21 @@ function renderPanel(pane) {
     message.hidden = true;
   }
   renderFiles(pane);
-  features?.renderTabs(pane);
 }
 function renderFiles(pane) {
   const panel = panelElement(pane);
   const rows = sortedFiles(pane);
-  const scroll = $('.file-scroll',panel);
-  const scrollTop = scroll.scrollTop;
-  const start = rows.length > 300 ? Math.max(0,Math.floor(scrollTop/28)-15) : 0;
-  const end = rows.length > 300 ? Math.min(rows.length,start+Math.ceil((scroll.clientHeight||600)/28)+40) : rows.length;
-  const visibleRows = rows.slice(start,end);
-  pane.virtualStart = start;
-  const before = start ? '<tr class="virtual-spacer" aria-hidden="true"><td colspan="3" data-spacer="'+(start*28)+'"></td></tr>' : '';
-  const after = end < rows.length ? '<tr class="virtual-spacer" aria-hidden="true"><td colspan="3" data-spacer="'+((rows.length-end)*28)+'"></td></tr>' : '';
   const visibleIds = new Set(rows.map((file) => file.id));
   pane.selected = new Set([...pane.selected].filter((id) => visibleIds.has(id)));
   const query = $('#global-search').value.trim();
-  const table = `<table class="file-table" role="grid" aria-multiselectable="true" aria-label="${escapeHtml(pane.name)} 파일 목록"><colgroup><col class="name-column"><col class="date-column"><col class="size-column"></colgroup><thead><tr>${[['name','이름'],['modified','수정한 날짜'],['size','크기']].map(([key,label]) => `<th scope="col" aria-sort="${pane.sort===key?(pane.direction===1?'ascending':'descending'):'none'}"><button class="sort-button" data-sort="${key}" aria-label="${label}순 정렬">${label}${pane.sort===key?icon('sort',pane.direction===1?'sort-ascending':''):''}</button></th>`).join('')}</tr></thead><tbody>${before}${visibleRows.map((file) => `<tr tabindex="0" draggable="true" data-file="${file.id}" aria-selected="${pane.selected.has(file.id)}" class="${pane.selected.has(file.id)?'selected':''}" aria-label="${escapeHtml(file.name)}, ${file.type==='folder'?'폴더':sizeText(file.size)}"><td><span class="file-name">${fileIcon(file)}<span title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span></span></td><td>${modifiedDate(file.modified)}</td><td title="${file.size === null?'':escapeHtml(`${file.size.toLocaleString('ko-KR')} 바이트`)}">${sizeText(file.size)}</td></tr>`).join('')}${after}</tbody></table>`;
+  const table = `<table class="file-table" role="grid" aria-multiselectable="true" aria-label="${escapeHtml(pane.name)} 파일 목록"><colgroup><col class="name-column"><col class="date-column"><col class="size-column"></colgroup><thead><tr>${[['name','이름'],['modified','수정한 날짜'],['size','크기']].map(([key,label]) => `<th scope="col" aria-sort="${pane.sort===key?(pane.direction===1?'ascending':'descending'):'none'}"><button class="sort-button" data-sort="${key}" aria-label="${label}순 정렬">${label}${pane.sort===key?icon('sort',pane.direction===1?'sort-ascending':''):''}</button></th>`).join('')}</tr></thead><tbody>${rows.map((file) => `<tr tabindex="0" draggable="true" data-file="${file.id}" aria-selected="${pane.selected.has(file.id)}" class="${pane.selected.has(file.id)?'selected':''}" aria-label="${escapeHtml(file.name)}, ${file.type==='folder'?'폴더':sizeText(file.size)}"><td><span class="file-name">${fileIcon(file)}<span title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span></span></td><td>${modifiedDate(file.modified)}</td><td title="${file.size === null?'':escapeHtml(`${file.size.toLocaleString('ko-KR')} 바이트`)}">${sizeText(file.size)}</td></tr>`).join('')}</tbody></table>`;
   let empty = '';
   if (!rows.length) {
     const message = pane.loading ? '폴더를 불러오고 있어요' : pane.error && !pane.loaded ? '폴더를 열지 못했어요' : query && pane.loaded ? '일치하는 파일이 없어요' : pane.loaded ? '비어 있는 폴더예요' : '폴더 경로를 입력해 주세요';
     const detail = query && pane.loaded ? '다른 검색어를 입력해 보세요.' : pane.error && !pane.loaded ? '경로를 확인하거나 다시 시도해 주세요.' : '';
     empty = `<div class="empty-state">${icon(pane.error?'info':query?'search':'folder')}<p>${message}</p>${detail?`<small>${detail}</small>`:''}</div>`;
   }
-  scroll.innerHTML = table + empty;
-  $$('[data-spacer]',scroll).forEach(cell=>{cell.style.height=cell.dataset.spacer+'px';});
-  scroll.scrollTop = scrollTop;
+  $('.file-scroll',panel).innerHTML = table + empty;
   $('.panel-count',panel).textContent = pane.loaded ? (query ? `${rows.length} / ${pane.entries.length}개 항목` : `${pane.entries.length}개 항목`) : pane.loading ? '불러오는 중' : '폴더를 확인해 주세요';
   $('.panel-footer-right',panel).innerHTML = pane.loaded ? `${icon('folder')}<span>${pane.entries.filter((file) => file.type==='folder').length}개 폴더${pane.skipped?` · ${pane.skipped}개 읽기 제외`:''}</span>` : '';
   updateSelection();
@@ -682,7 +663,6 @@ function updateWorkspaceView() {
     button.setAttribute('aria-pressed',String(Number(button.dataset.layout) === item.layout));
   });
   updateSelection();
-  features?.workspaceView();
 }
 function updateSelection() {
   if (!ready) return;
@@ -690,11 +670,11 @@ function updateSelection() {
   const cutPaths = new Set(clipboard?.operation==='move' ? clipboard.sources.map(pathKey) : []);
   allPanes().forEach((pane) => {
     const panel = panelElement(pane);
-    if (!panel || panel.hidden) return;
+    if (!panel) return;
     const active = pane.id === current.id;
     panel.classList.toggle('active',active);
     $('.active-badge',panel).hidden = !active;
-    const entriesById = pane.entryById || new Map(pane.entries.map((file) => [file.id,file]));
+    const entriesById = new Map(pane.entries.map((file) => [file.id,file]));
     $$('[data-file]',panel).forEach((row) => {
       const selected = pane.selected.has(row.dataset.file);
       row.classList.toggle('selected',selected);
@@ -710,7 +690,7 @@ function updateSelection() {
   $('#copy-button').disabled = !canTransfer || !files.length || current.loading || Boolean(current.error);
   $('#cut-button').disabled = !canTransfer || !files.length || current.loading || Boolean(current.error);
   $('#transfer-button').disabled = !canTransfer || !files.length || current.loading || Boolean(current.error);
-  $('#paste-button').disabled = !canTransfer || (!clipboard?.sources.length && typeof bridge.clipboardRead !== 'function') || !current.loaded || current.loading || Boolean(current.error);
+  $('#paste-button').disabled = !canTransfer || !clipboard?.sources.length || !current.loaded || current.loading || Boolean(current.error);
   const favoriteExists = combinedFavorites().some((item) => samePath(item.path,current.path));
   $('#add-favorite-button').disabled = !current.loaded || current.loading || favoriteExists || typeof bridge.savePreferences !== 'function';
   $('#add-favorite-button').title = favoriteExists ? '이미 즐겨찾기에 있는 폴더' : '현재 폴더 즐겨찾기 추가';
@@ -761,13 +741,10 @@ async function navigate(pane,requestedPath,options = {}) {
     if (options.back) pane.history.pop();
     else if (changedPath && pane.loaded && !options.initial) pane.history.push(previousPath);
     pane.path = directory.path;
-    if (Number.isInteger(options.tabIndex)) pane.activeTab = options.tabIndex;
-    pane.tabs[pane.activeTab] = directory.path;
     pane.name = directory.name || directory.path;
     pane.parent = directory.parent;
     pane.breadcrumbs = directory.breadcrumbs;
     pane.entries = directory.entries.map((file,index) => ({...file,id:`${pane.id}-r${token}-${index}`}));
-    pane.entryById = new Map(pane.entries.map(file => [file.id,file]));
     pane.skipped = directory.skipped || 0;
     pane.selected = !changedPath ? new Set(pane.entries.filter((file) => previousSelected.has(pathKey(file.path))).map((file) => file.id)) : new Set();
     pane.selectionAnchor = !changedPath ? pane.entries.find((file) => samePath(file.path,previousAnchor))?.id || null : null;
@@ -780,8 +757,7 @@ async function navigate(pane,requestedPath,options = {}) {
       addressElement(pane).value = pane.path;
     }
     renderPanel(pane);
-    features?.syncWatches();
-    if (changedPath || Number.isInteger(options.tabIndex)) persistSession();
+    if (changedPath) persistSession();
     if (!options.initial && !options.refresh) rememberPath(directory.path);
     // Only the pane that initiated the request may receive focus; never steal it from another pane or a new draft.
     const focusedPane = paneFromElement(document.activeElement);
@@ -872,10 +848,6 @@ async function bootstrap() {
     startupWarning = [result.value.sessionWarning,result.value.preferencesWarning].filter(Boolean).join(' ');
     const session = isSessionValid(result.value.session) ? result.value.session : defaultSession();
     workspaceId = session.workspaceId;
-    if (session.version === 2) {
-      for (const id of Object.keys(workspaceDefinitions)) delete workspaceDefinitions[id];
-      for (const [id,saved] of Object.entries(session.workspaces)) workspaceDefinitions[id] = {name:saved.name,description:'폴더와 탭을 모아 두는 작업 공간',icon:'grid'};
-    }
     workspaces = Object.fromEntries(Object.entries(workspaceDefinitions).map(([id,definition]) => {
       const saved = session.workspaces[id];
       return [id,{...definition,layout:saved.layout,active:saved.layout===2 && saved.active>1?0:saved.active,panes:saved.panes.map((pane,index) => makePane(id,index,pane))}];
@@ -890,7 +862,7 @@ async function bootstrap() {
     $('#storage-status').textContent = '폴더 위치 자동 저장';
     renderStorageMessage();
     if (!result.value.session) persistSession();
-    visiblePanes().forEach((pane) => {if (!pane.loading) navigate(pane,pane.path,{initial:true});});
+    allPanes().forEach((pane) => {navigate(pane,pane.path,{initial:true});});
   } catch (error) {
     if (token !== bootstrapToken) return;
     showUnavailable(error.message || '이 PC의 폴더를 불러오지 못했어요.',true);
@@ -994,22 +966,16 @@ $('#panels').addEventListener('click',(event) => {
   if (action==='retry' && pane.error) navigate(pane,pane.error.path);
   if (action==='expand') setLayout(workspace().layout===1?4:1);
 });
-$('#panels').addEventListener('scroll',event=>{
-  if(!event.target.matches('.file-scroll'))return;
-  const pane=paneFromElement(event.target);
-  if(pane && sortedFiles(pane).length>300 && Math.max(0,Math.floor(event.target.scrollTop/28)-15)!==pane.virtualStart)renderFiles(pane);
-},true);
 $('#panels').addEventListener('dblclick',(event) => {
   const row = event.target.closest('[data-file]');
   if (!row) return;
   const pane = paneFromElement(row);
   openFile(pane,pane.entries.find((file) => file.id===row.dataset.file));
 });
-$('#panels').addEventListener('contextmenu',async (event) => {
+$('#panels').addEventListener('contextmenu',(event) => {
   const scroll = event.target.closest('.file-scroll');
   if (!scroll || !ready) return;
   event.preventDefault();
-  await features?.readClipboard();
   openContextMenu(paneFromElement(scroll),event.target.closest('[data-file]'),event.clientX,event.clientY);
 });
 $('#file-context-menu').addEventListener('click',(event) => {
@@ -1160,15 +1126,10 @@ $('#panels').addEventListener('keydown',(event) => {
     return;
   }
   if (event.key===' ') {selectFile(pane,row.dataset.file,{toggle:event.ctrlKey || event.metaKey,range:event.shiftKey});return;}
-  const rows = sortedFiles(pane);
-  const index = rows.findIndex(file=>file.id===row.dataset.file);
-  const nextIndex = event.key==='Home'?0:event.key==='End'?rows.length-1:Math.max(0,Math.min(rows.length-1,index+(event.key==='ArrowDown'?1:-1)));
-  const nextFile = rows[nextIndex];
-  if (nextFile) {
-    if(rows.length>300){$('.file-scroll',panelElement(pane)).scrollTop=nextIndex*28;renderFiles(pane);}
-    const next = $$('[data-file]',panelElement(pane)).find(element=>element.dataset.file===nextFile.id);
-    next?.focus();
-    if (!(event.ctrlKey || event.metaKey) || event.shiftKey) selectFile(pane,nextFile.id,{toggle:event.ctrlKey || event.metaKey,range:event.shiftKey});
+  const next = event.key==='ArrowDown'?row.nextElementSibling:event.key==='ArrowUp'?row.previousElementSibling:event.key==='Home'?row.parentElement.firstElementChild:event.key==='End'?row.parentElement.lastElementChild:null;
+  if (next) {
+    next.focus();
+    if (!(event.ctrlKey || event.metaKey) || event.shiftKey) selectFile(pane,next.dataset.file,{toggle:event.ctrlKey || event.metaKey,range:event.shiftKey});
   }
 });
 $('#global-search').addEventListener('input',() => {if (ready) visiblePanes().forEach(renderFiles);});
@@ -1263,6 +1224,7 @@ $('#help-button').addEventListener('click',() => {
   $('#info-dialog').showModal();
 });
 document.addEventListener('keydown',(event) => {
+  if (document.querySelector('.ssh-workspace:not([hidden])')) return;
   if ($('dialog[open]') || !ready) return;
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key==='k') {event.preventDefault();closeAddressMenu();$('#global-search').focus();$('#global-search').select();return;}
@@ -1306,14 +1268,11 @@ document.addEventListener('pointerdown',(event) => {
 });
 window.addEventListener('resize',() => {closeAddressMenu();closeContextMenu();closeTransferResult();clearDropFeedback();});
 window.addEventListener('focus',() => {
-  if (!ready || transferPending) return;
+  if (!nativeDragOut || !ready || transferPending) return;
   nativeDragOut = false;
-  visiblePanes().filter((pane) => pane.loaded && !pane.loading).forEach((pane) => navigate(pane,pane.path,{refresh:true,preserveDraft:true}));
-  features?.readClipboard();
-  bridge.drives?.().then(result => {if(result.ok){drives=result.value;renderSidebar();}}).catch(() => {});
+  allPanes().filter((pane) => pane.loaded && !pane.loading).forEach((pane) => navigate(pane,pane.path,{refresh:true,preserveDraft:true}));
 });
-features = installFeatures({bridge,$,$$,escapeHtml,icon,showToast,activePane,allPanes,visiblePanes,selectedFile,selectedFiles,panelElement,paneFromElement,navigate,renderFiles,renderSidebar,updateWorkspaceView,updateSelection,persistSession,makePane,createPanel,runMutation,refreshAffected,remapReferences,
-  get ready(){return ready;}, get busy(){return transferPending;}, get workspaces(){return workspaces;},get definitions(){return workspaceDefinitions;},get workspaceId(){return workspaceId;},set workspaceId(id){workspaceId=id;},
-  get clipboard(){return clipboard;},set clipboard(value){clipboard=value;clipboardRevision++;},set mutationLabel(value){mutationLabel=value;},sizeText});
 renderSidebar();
 bootstrap();
+
+initSshWorkspace(() => activePane()?.path || favorites[0]?.path);

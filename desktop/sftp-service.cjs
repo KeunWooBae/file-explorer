@@ -6,41 +6,43 @@ const { createHash, randomUUID } = require('node:crypto');
 const { pipeline } = require('node:stream/promises');
 const { Transform } = require('node:stream');
 const { mutationPath, noLinkAncestors } = require('./file-operations.cjs');
+const { resolveAuth, checkKnownHosts } = require('./ssh-auth.cjs');
 const { validateName } = require('./explorer-actions.cjs');
 function remotePath(value) {
   if(typeof value!=='string'||!value.startsWith('/')||value.length>32767||value.includes('\0'))throw new Error('원격 폴더의 절대 경로를 입력하세요.');
   return path.posix.normalize(value);
 }
-function createSftpService({ directory, confirmHost, onProgress = () => {} }) {
-  let connection, sftp, connecting=false, busy=false;
+function createSftpService({ directory, confirmHost, onProgress = () => {}, onTerminal = () => {}, onState = () => {}, authOptions }) {
+  let terminalFlow;
+  let connection, sftp, terminal, connecting=false, busy=false;
   const hostsFile=path.join(directory,'ssh-known-hosts.json');
   const call=(method,...args)=>new Promise((resolve,reject)=>{
     if(!sftp)return reject(new Error('SFTP 연결이 필요합니다.'));
     sftp[method](...args,(error,value)=>error?reject(error):resolve(value));
   });
-  async function disconnect(){if(busy)throw new Error('파일 전송이 끝난 후 연결을 종료하세요.');connection?.end();connection=null;sftp=null;}
+  async function disconnect(){if(busy)throw new Error('파일 전송이 끝난 후 연결을 종료하세요.');terminal?.close();terminal=null;connection?.end();connection=null;sftp=null;}
   async function connect(input) {
     if(connecting||busy)throw new Error('연결 또는 전송 작업이 진행 중입니다.');
-    if(!input || typeof input.host!=='string'||!input.host.trim()||input.host.length>253||/[\s\0]/.test(input.host)||typeof input.username!=='string'||!input.username||input.username.length>128)throw new Error('호스트와 사용자 이름을 확인하세요.');
-    const port=Number(input.port||22);if(!Number.isInteger(port)||port<1||port>65535)throw new Error('포트는 1~65535 범위여야 합니다.');
     await disconnect();connecting=true;
     const client=new Client();connection=client;
     let hostError;
     try {
-      const key=input.privateKeyPath?await fs.readFile(mutationPath(input.privateKeyPath)):undefined;
+      const auth=await resolveAuth(input,authOptions);
+      const {host,port,username}=auth;
       await new Promise((resolve,reject)=>{
-        const finishError=error=>reject(hostError||error);
-        client.once('ready',resolve);client.on('error',finishError);client.on('close',()=>{if(connection===client){connection=null;sftp=null;}reject(new Error('SSH 연결이 종료되었습니다.'));});
-        client.connect({host:input.host.trim(),port,username:input.username,password:input.password||undefined,privateKey:key,passphrase:input.passphrase||undefined,readyTimeout:30000,keepaliveInterval:15000,
+        const finishError=error=>reject(hostError||(error.level==='client-authentication'?new Error('SSH 인증 실패: SSH 설정의 사용자·IdentityFile을 확인하세요. 잠긴 키는 ssh-agent에 등록하거나 키 암호를 입력하세요. '+auth.diagnostics.join(', ')):error));
+        client.once('ready',resolve);client.on('error',finishError);client.on('close',()=>{if(connection===client){connection=null;sftp=null;terminal=null;onState({connected:false});}reject(new Error('SSH 연결이 종료되었습니다.'));});
+        client.connect({host,port,username,authHandler:auth.attempts,readyTimeout:30000,keepaliveInterval:15000,
           hostVerifier(raw,callback){
             (async()=>{
               const fingerprint='SHA256:'+createHash('sha256').update(raw).digest('base64').replace(/=+$/,'');
-              const id=`${input.host.trim()}:${port}`;
+              const id=`${host}:${port}`;
+              const known=await checkKnownHosts(auth.knownHosts,auth.hostAlias||host,port,raw);
               let hosts={};try{hosts=JSON.parse(await fs.readFile(hostsFile,'utf8'));}catch(e){if(e.code!=='ENOENT')throw new Error('저장된 SSH 서버 키를 읽을 수 없습니다.');}
               if(Object.hasOwn(hosts,id)){
                 if(hosts[id]!==fingerprint)throw new Error('SSH 서버 키가 이전 연결과 다릅니다. 서버 관리자에게 확인하세요.');
-              }else{
-                if(!await confirmHost({host:input.host.trim(),port,fingerprint}))return callback(false);
+              }else if(!known){
+                if(!await confirmHost({host,port,fingerprint}))return callback(false);
                 hosts[id]=fingerprint;await fs.mkdir(directory,{recursive:true});const temp=hostsFile+'.'+randomUUID()+'.tmp';await fs.writeFile(temp,JSON.stringify(hosts,null,2),{mode:0o600,flag:'wx'});await fs.rename(temp,hostsFile);
               }
               callback(true);
@@ -50,7 +52,7 @@ function createSftpService({ directory, confirmHost, onProgress = () => {} }) {
       });
       sftp=await new Promise((resolve,reject)=>client.sftp((e,value)=>e?reject(e):resolve(value)));
       const home=await call('realpath','.');
-      return {host:input.host.trim(),port,username:input.username,path:home};
+      return {host,port,username,path:home};
     }catch(e){client.destroy();if(connection===client){connection=null;sftp=null;}throw e;}
     finally{connecting=false;}
   }
@@ -113,6 +115,36 @@ function createSftpService({ directory, confirmHost, onProgress = () => {} }) {
       return result;
     }finally{busy=false;onProgress({finished:true,bytes});}
   }
-  return {connect,disconnect,list,transfer};
+
+  async function openTerminal(size) {
+    if(!connection)throw new Error('SSH 연결이 필요합니다.');
+    terminal?.close();terminal=null;
+    const client=connection;
+    const stream=await new Promise((resolve,reject)=>client.shell({term:'xterm-256color',cols:80,rows:24},(e,s)=>e?reject(e):resolve(s)));
+    if(connection!==client){stream.close();throw new Error('SSH 연결이 종료되었습니다.');}
+    terminal=stream;
+    const flow={id:randomUUID(),pending:0,stream};terminalFlow=flow;
+    const output=data=>{if(terminal!==stream)return;flow.pending+=data.length;if(flow.pending>=262144){stream.pause();stream.stderr.pause();}onTerminal({data:data.toString('base64'),id:flow.id,bytes:data.length});};
+    stream.on('data',output);stream.stderr.on('data',output);
+    stream.on('error',()=>onTerminal({closed:true}));
+    stream.on('close',()=>{if(terminal===stream){terminal=null;onTerminal({closed:true});}});
+    resizeTerminal(size);return null;
+  }
+  function writeTerminal(data){
+    if(!terminal)throw new Error('SSH 터미널이 연결되어 있지 않습니다.');
+    if(typeof data!=='string'||Buffer.byteLength(data)>65536)throw new Error('터미널 입력이 너무 큽니다.');
+    return new Promise((resolve,reject)=>terminal.write(data,error=>error?reject(error):resolve(null)));
+  }
+  function acknowledgeTerminal(input){
+    const flow=terminalFlow;if(!flow||input?.id!==flow.id||terminal!==flow.stream)return null;
+    if(!Number.isInteger(input.bytes)||input.bytes<0||input.bytes>flow.pending)throw new Error('터미널 수신 확인이 올바르지 않습니다.');
+    flow.pending-=input.bytes;if(flow.pending<65536){flow.stream.resume();flow.stream.stderr.resume();}return null;
+  }
+  function resizeTerminal(size){
+    if(!size||!Number.isInteger(size.cols)||!Number.isInteger(size.rows)||size.cols<2||size.cols>500||size.rows<1||size.rows>200)throw new Error('터미널 크기가 올바르지 않습니다.');
+    terminal?.setWindow(size.rows,size.cols,0,0);return null;
+  }
+
+  return {connect,disconnect,list,transfer,openTerminal,writeTerminal,resizeTerminal,acknowledgeTerminal};
 }
 module.exports={createSftpService,remotePath};

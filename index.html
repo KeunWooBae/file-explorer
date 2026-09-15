@@ -2,13 +2,16 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'nonce-__PANE_STYLE_NONCE__'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="pane-style-nonce" content="__PANE_STYLE_NONCE__">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#f4f6f8">
   <title>pane — 나란히 보는 파일 탐색기</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='%23356ae6'%3E%3Crect x='2' y='2' width='8' height='8' rx='2'/%3E%3Crect x='14' y='2' width='8' height='8' rx='2' opacity='.4'/%3E%3Crect x='2' y='14' width='8' height='8' rx='2' opacity='.65'/%3E%3Crect x='14' y='14' width='8' height='8' rx='2'/%3E%3C/g%3E%3C/svg%3E">
   <script src="./theme.js"></script>
   <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./ssh-workspace.css">
+  <link rel="stylesheet" href="./node_modules/@xterm/xterm/css/xterm.css">
 </head>
 <body>
   <div class="app-shell">
@@ -48,6 +51,8 @@
   <section class="transfer-result" id="transfer-result" role="dialog" aria-label="파일 작업 결과" popover="manual" tabindex="-1"></section>
   <div class="drag-feedback" id="drag-feedback" role="status" popover="manual"></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="./node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="./node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

@@ -92,7 +92,7 @@ async function launchAndCheck(executable, expectedTheme) {
   page.on('pageerror', error => errors.push(error.message));
   await page.getByRole('textbox', { name: '1번 패널 폴더 경로', exact: true }).waitFor({ timeout: 15000 });
   const url = page.url();
-  assert.match(url, /^file:\/\/\/.+\.asar\/index\.html$/);
+  assert.equal(url, 'pane://app/index.html');
   const restored = Boolean(expectedTheme);
   if (restored) {
     await page.locator('[data-pane="design-0"]').getByText('확인 1.txt', { exact: true }).waitFor();

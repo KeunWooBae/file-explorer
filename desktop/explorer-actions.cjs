@@ -148,7 +148,6 @@ function createExplorerActions(options) {
         throw error;
       }
     }
-    await options.onCompleted?.('rename',source,target);
     return { source, path: target };
   }
 
@@ -159,7 +158,6 @@ function createExplorerActions(options) {
     await noLinkAncestors(parent);
     if (!(await fs.stat(parent)).isDirectory()) throw failure('ENOTDIR');
     await fs.mkdir(filename); // Exclusive creation; no recursive merge into an existing folder.
-    await options.onCompleted?.('create',null,filename);
     return { path: filename };
   }
 

@@ -4,11 +4,13 @@ test('real loopback SSH/SFTP verifies host keys and transfers both ways without 
   const root=await fs.mkdtemp(path.join(__dirname,'../.checks/sftp-'));
   const remote=path.join(root,'remote'),local=path.join(root,'local');await fs.mkdir(remote);await fs.mkdir(local);await fs.mkdir(path.join(remote,'nested'));await fs.writeFile(path.join(remote,'nested/한글.txt'),'remote bytes');await fs.writeFile(path.join(local,'upload.txt'),'local bytes');
   const hostKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs1',format:'pem'});
-  const clients=new Set();
+  const clients=new Set();let received='',windowSize;const outputs=[];
+  const userKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs1',format:'pem'});const parsedUserKey=utils.parseKey(userKey);const keyFile=path.join(root,'identity');await fs.writeFile(keyFile,userKey);
+  const configPath=path.join(root,'config');await fs.writeFile(configPath,'Host *\n  IdentityFile "'+keyFile.replaceAll('\\','/')+'"\n  IdentitiesOnly yes\n  User test\n');
   const server=new Server({hostKeys:[hostKey]},client=>{
     clients.add(client);client.on('close',()=>clients.delete(client));client.on('error',()=>{});
-    client.on('authentication',ctx=>ctx.method==='password'&&ctx.username==='test'&&ctx.password==='fixture-password'?ctx.accept():ctx.reject());
-    client.on('ready',()=>client.on('session',accept=>accept().on('sftp',accept=>{
+    client.on('authentication',ctx=>{if(ctx.username==='test'&&((ctx.method==='password'&&ctx.password==='fixture-password')||(ctx.method==='publickey'&&ctx.key.data.equals(parsedUserKey.getPublicSSH())&&(!ctx.signature||parsedUserKey.verify(ctx.blob,ctx.signature,ctx.hashAlgo)))))ctx.accept();else ctx.reject();});
+    client.on('ready',()=>client.on('session',accept=>accept().on('pty',accept=>accept()).on('window-change',(accept,_reject,info)=>{windowSize=info;accept?.();}).on('shell',accept=>{const stream=accept();stream.write('fixture shell ready\r\n');stream.on('data',data=>{received+=data.toString();stream.write(data);});}).on('sftp',accept=>{
       const stream=accept(),handles=new Map();let next=1;
       const disk=p=>{const full=path.resolve(remote,'.'+(p.startsWith('/')?p:'/'+p));if(full!==remote&&!full.startsWith(remote+path.sep))throw new Error('Escape');return full;};
       const handle=value=>{const id=Buffer.alloc(4);id.writeUInt32BE(next++);handles.set(id.toString('hex'),value);return id;};
@@ -29,14 +31,19 @@ test('real loopback SSH/SFTP verifies host keys and transfers both ways without 
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const input={host:'127.0.0.1',port:server.address().port,username:'test',password:'fixture-password'};
-  let prompts=0;const service=createSftpService({directory:root,confirmHost:async()=>{prompts++;return true;}});
+  let prompts=0;const service=createSftpService({directory:root,authOptions:{home:root,configPath},onTerminal:value=>{if(value.data){outputs.push(Buffer.from(value.data,'base64').toString());service.acknowledgeTerminal({id:value.id,bytes:value.bytes});}},confirmHost:async()=>{prompts++;return true;}});
   try{
     const connection=await service.connect(input);assert.equal(connection.path,'/');assert.equal(prompts,1);
     assert.equal((await service.list('/')).entries[0].name,'nested');
     const downloaded=await service.transfer({direction:'download',sources:['/nested'],destination:local});assert.equal(downloaded.failed.length,0,JSON.stringify(downloaded));assert.equal(await fs.readFile(path.join(local,'nested/한글.txt'),'utf8'),'remote bytes');
     const uploaded=await service.transfer({direction:'upload',sources:[path.join(local,'upload.txt')],destination:'/'});assert.equal(uploaded.failed.length,0,JSON.stringify(uploaded));assert.equal(await fs.readFile(path.join(remote,'upload.txt'),'utf8'),'local bytes');
     await fs.writeFile(path.join(local,'upload.txt'),'replacement');const conflict=await service.transfer({direction:'upload',sources:[path.join(local,'upload.txt')],destination:'/'});assert.equal(conflict.failed.length,1);assert.equal(await fs.readFile(path.join(remote,'upload.txt'),'utf8'),'local bytes');
-    await service.disconnect();await service.connect(input);assert.equal(prompts,1);await service.disconnect();
+    await service.disconnect();await service.connect({...input,password:undefined,authMode:'auto'});assert.equal(prompts,1);
+    await service.openTerminal({cols:100,rows:30});await service.writeTerminal('echo hello\r');
+    for(let i=0;i<100&&(!received.includes('echo hello')||!outputs.join('').includes('echo hello')||!windowSize);i++)await new Promise(r=>setTimeout(r,20));
+    assert.match(received,/echo hello/);assert.match(outputs.join(''),/fixture shell ready/);assert.match(outputs.join(''),/echo hello/);assert.equal(windowSize.cols,100);assert.equal(windowSize.rows,30);
+    assert.throws(()=>service.writeTerminal('x'.repeat(70000)),/너무 큽니다/);
+    await service.disconnect();
     const known=JSON.parse(await fs.readFile(path.join(root,'ssh-known-hosts.json'),'utf8'));known[`127.0.0.1:${input.port}`]='SHA256:wrong';await fs.writeFile(path.join(root,'ssh-known-hosts.json'),JSON.stringify(known));await assert.rejects(service.connect(input),/서버 키/);
   }finally{await service.disconnect();for(const client of clients)client.end();await new Promise(resolve=>server.close(resolve));}
 });

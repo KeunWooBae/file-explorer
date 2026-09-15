@@ -1,6 +1,6 @@
 {
   "name": "pane-prototype",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "Windows multi-pane file explorer",
   "type": "module",
@@ -11,8 +11,8 @@
   },
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check app.js && node --check theme.js && node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/filesystem.cjs && node --check desktop/session-store.cjs && node --check desktop/preferences-store.cjs && node --check desktop/file-operations.cjs && node --check desktop/explorer-actions.cjs && node --check explorer-features.js && node --check desktop/transfer-manager.cjs && node --check desktop/content-service.cjs && node --check desktop/system-clipboard.cjs && node --check desktop/shell-menu.cjs && node --check sftp-ui.js && node --check desktop/sftp-service.cjs",
-    "test": "node --test desktop/native-files.test.cjs desktop/preferences-store.test.cjs desktop/file-operations.test.cjs desktop/explorer-actions.test.cjs desktop/enhancements.test.cjs desktop/sftp-service.test.cjs",
+    "check": "node --check app.js && node --check theme.js && node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/filesystem.cjs && node --check desktop/session-store.cjs && node --check desktop/preferences-store.cjs && node --check desktop/file-operations.cjs && node --check desktop/explorer-actions.cjs && node --check server.mjs && node --check ssh-workspace.js && node --check desktop/ssh-auth.cjs && node --check desktop/sftp-service.cjs",
+    "test": "node --test desktop/native-files.test.cjs desktop/preferences-store.test.cjs desktop/file-operations.test.cjs desktop/explorer-actions.test.cjs desktop/ssh-auth.test.cjs desktop/sftp-service.test.cjs",
     "desktop": "electron .",
     "build:portable": "node desktop/create-icon.cjs && electron-builder --win portable --x64"
   },
@@ -26,14 +26,14 @@
       "index.html",
       "styles.css",
       "app.js",
-      "explorer-features.js",
       "theme.js",
       "desktop/*.cjs",
       "!desktop/*.test.cjs",
       "!desktop/verify-*.cjs",
       "desktop/pane.ico",
       "package.json",
-      "sftp-ui.js"
+      "ssh-workspace.js",
+      "ssh-workspace.css"
     ],
     "asar": true,
     "win": {
@@ -51,21 +51,11 @@
       "artifactName": "pane-${version}-portable-${arch}.${ext}",
       "requestExecutionLevel": "user"
     },
-    "extraResources": [
-      {
-        "from": "desktop",
-        "to": "shell-helper",
-        "filter": [
-          "shell-menu.cs",
-          "shell-menu.ps1",
-          "clipboard.ps1"
-        ]
-      }
-    ],
     "npmRebuild": false
   },
   "dependencies": {
-    "ssh2": "1.17.0",
-    "unzipper": "0.12.5"
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "ssh2": "1.17.0"
   }
 }
